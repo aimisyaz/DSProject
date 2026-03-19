@@ -1,0 +1,145 @@
+install.packages("dplyr")      # Run once if not installed
+install.packages("Metrics")    # Run once
+install.packages("ggplot2")    # Run once
+
+library(dplyr)
+library(Metrics)
+library(ggplot2)
+
+predict_rating <- function(user_id, movie_id, matrix_data, similarity_matrix) {
+  user_id <- as.character(user_id)
+  movie_id <- as.character(movie_id)
+  
+  if(!(user_id %in% rownames(matrix_data))) return(NA)
+  if(!(movie_id %in% colnames(matrix_data))) return(NA)
+  
+  user_ratings <- matrix_data[user_id, ]
+  similarities <- similarity_matrix[movie_id, ]
+  
+  rated_movies <- which(user_ratings > 0)
+  if(length(rated_movies) == 0) return(NA)
+  
+  sim_scores <- similarities[rated_movies]
+  ratings <- user_ratings[rated_movies]
+
+  valid_idx <- !is.na(sim_scores)
+  sim_scores <- sim_scores[valid_idx]
+  ratings <- ratings[valid_idx]
+  if(length(sim_scores) == 0) return(NA)
+  if(sum(abs(sim_scores), na.rm = TRUE) == 0) return(NA)
+  
+  predicted <- sum(sim_scores * ratings) / sum(abs(sim_scores))
+  return(predicted)
+}
+
+set.seed(123)
+test_sample <- rating_data[sample(nrow(rating_data), 300), ]
+
+test_sample$predicted <- mapply(
+  predict_rating,
+  test_sample$user_id,
+  test_sample$item_id,
+  MoreArgs = list(matrix_data = matrix_data,
+                  similarity_matrix = movie_similarity_matrix)
+)
+
+test_sample <- na.omit(test_sample)
+rmse_value <- rmse(test_sample$rating, test_sample$predicted)
+rmse_value
+
+recommend_movies <- function(movie_id, similarity_matrix, top_n = 5) {
+  movie_id <- as.character(movie_id)
+  if(!(movie_id %in% rownames(similarity_matrix))) return(NA)
+  
+  similarity_scores <- similarity_matrix[movie_id, ]
+  sorted_scores <- sort(similarity_scores, decreasing = TRUE)
+  recommended_movies <- names(sorted_scores)[2:(top_n + 1)]
+  return(recommended_movies)
+}
+
+precision_at_k <- function(user_id, K = 5) {
+  actual <- rating_data %>%
+    filter(user_id == !!user_id, rating >= 4) %>%
+    pull(item_id)
+  if(length(actual) == 0) return(NA)
+  recs <- recommend_movies(sample(actual, 1), movie_similarity_matrix, K)
+  recs <- as.numeric(recs)
+  relevant <- sum(recs %in% actual)
+  return(relevant / K)
+}
+
+recall_at_k <- function(user_id, K = 5) {
+  actual <- rating_data %>%
+    filter(user_id == !!user_id, rating >= 4) %>%
+    pull(item_id)
+  if(length(actual) == 0) return(NA)
+  recs <- recommend_movies(sample(actual, 1), movie_similarity_matrix, K)
+  recs <- as.numeric(recs)
+  relevant <- sum(recs %in% actual)
+  return(relevant / length(actual))
+}
+
+users_sample <- sample(unique(rating_data$user_id), 20)
+precision_list <- sapply(users_sample, precision_at_k)
+recall_list <- sapply(users_sample, recall_at_k)
+
+avg_precision <- mean(precision_list, na.rm = TRUE)
+avg_recall <- mean(recall_list, na.rm = TRUE)
+
+avg_precision
+avg_recall
+
+performance_df <- data.frame(
+  Metric = c("Precision", "Recall", "RMSE"),
+  Value = c(avg_precision, avg_recall, rmse_value)
+)
+
+write.csv(performance_df, "C:/Users/ASUS/Downloads/model_performance.csv", row.names = FALSE)
+
+# Ensure movie_lookup exists
+movie_lookup <- data %>%
+  select(item_id, movie_title) %>%
+  distinct()
+
+recommended_movies <- data.frame(
+  user_id = integer(),
+  recommended_item_id = integer(),
+  recommended_movie_title = character(),
+  stringsAsFactors = FALSE
+)
+
+for(u in users_sample){
+  user_high_rated <- rating_data %>%
+    filter(user_id == u, rating >= 4) %>%
+    pull(item_id)
+  
+  if(length(user_high_rated) == 0) next
+  
+  base_movie <- sample(user_high_rated, 1)
+  
+  rec_ids <- recommend_movies(base_movie, movie_similarity_matrix, top_n = 5)
+  rec_ids <- as.numeric(rec_ids)
+  
+  rec_titles <- movie_lookup %>%
+    filter(item_id %in% rec_ids) %>%
+    pull(movie_title)
+  
+  recommended_movies <- rbind(
+    recommended_movies,
+    data.frame(
+      user_id = u,
+      recommended_item_id = rec_ids,
+      recommended_movie_title = rec_titles,
+      stringsAsFactors = FALSE
+    )
+  )
+}
+
+# Export recommended movies CSV
+write.csv(recommended_movies, "C:/Users/ASUS/Downloads/recommended_movies.csv", row.names = FALSE)
+
+ggplot(performance_df, aes(x = Metric, y = Value)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Model Performance", x = "Metric", y = "Value") +
+  theme_minimal()
+
